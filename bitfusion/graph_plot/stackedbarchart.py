@@ -108,6 +108,9 @@ def _extract_arch_metadata(arch_row):
 	return architectures, column_arch
 
 def read_ant_results(csvFilename):
+	"""
+	将表格中的数据转换成多个字典。
+	"""
 	with open(csvFilename, 'r') as f:
 		reader = csv.reader(f, skipinitialspace=True)
 		rows = [row for row in reader]
@@ -186,14 +189,56 @@ def _color_gradient(count, start=None, end=None):
 	step = (end - start) / float(count - 1) if count > 1 else 0.0
 	return [str(end - step * idx) for idx in range(count)]
 
+def _is_valid_number(val):
+	if val is None:
+		return False
+	try:
+		return not math.isnan(float(val))
+	except (TypeError, ValueError):
+		return False
+
+def _bench_arch_has_data(arch, bench_idx, cycle_data, energy_data):
+	series = cycle_data.get(arch)
+	if series and bench_idx < len(series) and _is_valid_number(series[bench_idx]):
+		return True
+	for comp_map in energy_data.values():
+		arch_series = comp_map.get(arch)
+		if arch_series and bench_idx < len(arch_series) and _is_valid_number(arch_series[bench_idx]):
+			return True
+	return False
+
 def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, energy_data):
+	"""
+	绘制柱状图。
+	"""
 	n_bench = len(bench_names)
 	n_arch = len(architectures)
 	bar_width = BAR_WIDTH
-	inner_gap = 0.1	# 每组内两根柱子之间的缝隙
-	group_width = (bar_width + inner_gap) * n_arch + 0.2
-	group_centers = np.arange(n_bench) * group_width
-	offsets = (np.arange(n_arch) - (n_arch - 1) / 2.0) * (bar_width + inner_gap)
+	inner_gap = 0.15
+	bench_gap = 0.4
+	bench_arch_positions = []
+	bench_centers = []
+	bench_widths = []
+	current_x = 0.0
+	for bench_idx in range(n_bench):
+		active_arches = [arch for arch in architectures if _bench_arch_has_data(arch, bench_idx, cycle_data, energy_data)]
+		count = len(active_arches)
+		width = count * bar_width + max(count - 1, 0) * inner_gap
+		if width == 0:
+			width = bar_width
+		start = current_x
+		arch_pos = {}
+		offset = 0.0
+		for arch in active_arches:
+			arch_pos[arch] = start + offset + bar_width / 2.0
+			offset += bar_width + inner_gap
+		bench_arch_positions.append(arch_pos)
+		bench_centers.append(start + width / 2.0)
+		bench_widths.append(width)
+		current_x = start + width + bench_gap
+	total_width = current_x - bench_gap if n_bench else 0.0
+	left_edge = bench_centers[0] - bench_widths[0] / 2.0 if n_bench else 0.0
+	right_edge = total_width
 
 	arch_colors = ['#4C72B0', '#FFFFFF', '#4AC0E0', '#FFBF00', '#D62728', '#B5D68A']
 	component_colors = {}
@@ -233,35 +278,44 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 
 	# 开始绘制第一张子图: Time
 	max_time = 0.0
+	hatch_styles = ['', '///', '..', '', '', '']
+	edge_colors = ['black'] * max(1, n_arch)
 	for idx, arch in enumerate(architectures):
-		values = np.array([
-			cycle_data.get(arch, [None]*n_bench)[i]
-			if cycle_data.get(arch, [None]*n_bench)[i] is not None else np.nan
-			for i in range(n_bench)
-		], dtype=float)
-		mask = ~np.isnan(values)
-		if not np.any(mask):
+		series = cycle_data.get(arch, [])
+		x_positions = []
+		heights = []
+		for bench_idx in range(n_bench):
+			if bench_idx >= len(series):
+				continue
+			val = series[bench_idx]
+			x_pos = bench_arch_positions[bench_idx].get(arch)
+			if x_pos is None or not _is_valid_number(val):
+				continue
+			val = float(val)
+			x_positions.append(x_pos)
+			heights.append(val)
+			max_time = max(max_time, val)
+		if not x_positions:
 			continue
-		max_time = max(max_time, np.nanmax(values))
-		hatch_styles = ['', '///', '..', '', '', '']
-		edge_colors = ['black', 'black', 'black', 'black', 'black', 'black']
-		edge_color = edge_colors[idx] if idx < len(edge_colors) else 'black'
+		face_color = arch_colors[idx % len(arch_colors)]
+		hatch = hatch_styles[idx] if idx < len(hatch_styles) else ''
+		edge_color = edge_colors[idx % len(edge_colors)]
 		ax_time.bar(
-			group_centers[mask] + offsets[idx],
-			values[mask],
+			x_positions,
+			heights,
 			width=bar_width,
-			color=arch_colors[idx],
+			color=face_color,
 			edgecolor=edge_color,
 			label=arch,
 			linewidth=0.25,
-			hatch=hatch_styles[idx],
+			hatch=hatch,
 		)
-		# 对于geomean这个组，展示数据
-		if geo_index is not None and geo_index < len(values):
-			val = values[geo_index]
-			if not np.isnan(val) and val != 1.0:
+		if geo_index is not None and geo_index < len(series):
+			x_pos = bench_arch_positions[geo_index].get(arch)
+			val = series[geo_index] if x_pos is not None else None
+			if x_pos is not None and _is_valid_number(val) and float(val) != 1.0:
+				val = float(val)
 				offset = max_time * 0.02 if max_time > 0 else 0.02
-				x_pos = group_centers[geo_index] + offsets[idx]
 				ax_time.text(x_pos, val + offset, f'{val:.2f}',
 				             ha='center', va='bottom', fontsize=DATA_LABEL_FONTSIZE)
 
@@ -272,43 +326,46 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 	ax_time.set_axisbelow(True)
 
 	# 开始绘制第二张子图：Energy Breakdown
-	for idx, arch in enumerate(architectures):
-		bottom = np.zeros(n_bench)
-		for component in ANT_COMPONENTS:
-			comp_map = energy_data.get(component, {})
-			values_list = comp_map.get(arch)
-			if not values_list:
+	component_labeled = {comp: False for comp in ANT_COMPONENTS}
+	for bench_idx in range(n_bench):
+		arch_pos_map = bench_arch_positions[bench_idx]
+		for arch in architectures:
+			x_pos = arch_pos_map.get(arch)
+			if x_pos is None:
 				continue
-			values = np.array([
-				val if val is not None else 0.0 for val in values_list
-			], dtype=float)
-			mask = np.array([val is not None for val in values_list])
-			if not np.any(mask):
-				continue
-			style = component_styles.get(component, {})
-			color = style.get('color', component_colors.get(component, str(COLOR_MIN)))
-			edgecolor = style.get('edgecolor', 'black')
-			hatch = style.get('hatch', '')
-			linewidth = style.get('lw', 0.25)
-			ax_energy.bar(
-				group_centers[mask] + offsets[idx],
-				values[mask],
-				width=bar_width,
-				bottom=bottom[mask],
-				color=color,
-				label=component if idx == 0 else None,
-				edgecolor=edgecolor,
-				linewidth=linewidth,
-				hatch=hatch
-			)
-			bottom[mask] += values[mask]
-		# 对于geomean这个组，展示数据
-		if geo_index is not None and geo_index < len(bottom):
-			total = bottom[geo_index]
-			if not np.isnan(total) and total != 1.0 and total > 0:
-				offset = total * 0.02
-				x_pos = group_centers[geo_index] + offsets[idx]
-				ax_energy.text(x_pos, total + offset, f'{total:.2f}',
+			bottom = 0.0
+			for component in ANT_COMPONENTS:
+				comp_map = energy_data.get(component, {})
+				values_list = comp_map.get(arch)
+				if not values_list or bench_idx >= len(values_list):
+					continue
+				val = values_list[bench_idx]
+				if not _is_valid_number(val):
+					continue
+				val = float(val)
+				style = component_styles.get(component, {})
+				color = style.get('color', component_colors.get(component, str(COLOR_MIN)))
+				edgecolor = style.get('edgecolor', 'black')
+				hatch = style.get('hatch', '')
+				linewidth = style.get('lw', 0.25)
+				label = component if not component_labeled.get(component, False) else None
+				ax_energy.bar(
+					x_pos,
+					val,
+					width=bar_width,
+					bottom=bottom,
+					color=color,
+					label=label,
+					edgecolor=edgecolor,
+					linewidth=linewidth,
+					hatch=hatch
+				)
+				if label:
+					component_labeled[component] = True
+				bottom += val
+			if bench_idx == geo_index and bottom > 0 and bottom != 1.0:
+				offset = bottom * 0.02
+				ax_energy.text(x_pos, bottom + offset, f'{bottom:.2f}',
 				               ha='center', va='bottom', fontsize=DATA_LABEL_FONTSIZE)
 
 	comp_handles, comp_labels = ax_energy.get_legend_handles_labels()
@@ -324,40 +381,44 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 		)
 
 	# 调整画布的左右边界，让柱状图紧贴画布的左右边缘。
-	x_min = group_centers[0] + offsets[0] - bar_width / 2.0 - 0.2
-	x_max = group_centers[-1] + offsets[-1] + bar_width / 2.0 +0.2
+	margin = 0.2
 	for axis in (ax_time, ax_energy):
-		axis.set_xlim(x_min, x_max)
+		axis.set_xlim(left_edge - margin, right_edge + margin)
 
 	ax_energy.set_ylabel('Norm. Energy', fontsize=AXIS_TITLE_FONTSIZE)
 	ax_energy.grid(axis='y', color='0.85')
 	ax_energy.set_axisbelow(True)
-	ax_energy.set_xticks(group_centers)
+	ax_energy.set_xticks(bench_centers)
 	ax_energy.set_xticklabels([''] * len(bench_names))
 	xaxis_transform = ax_energy.get_xaxis_transform()
 	# 绘制不同benchmark的标签
 	arch_label_y = -0.03
 	bench_label_y = -0.38
 	for bench_idx, bench_name in enumerate(bench_names):
-		center = group_centers[bench_idx]
+		center = bench_centers[bench_idx]
 		ax_energy.text(center, bench_label_y, bench_name, ha='center', va='top',
 			fontsize=XAXIS_FONTSIZE, rotation=ROTATEXAXIS,
 			transform=xaxis_transform)
-		for arch_idx, arch in enumerate(architectures):
-			if arch_idx >= len(offsets):
+		arch_pos_map = bench_arch_positions[bench_idx]
+		for arch in architectures:
+			xpos = arch_pos_map.get(arch)
+			if xpos is None:
 				continue
-			xpos = center + offsets[arch_idx]
 			ax_energy.text(xpos, arch_label_y, arch, ha='center', va='top',
 				fontsize=XAXIS_FONTSIZE, rotation=90,
 				transform=xaxis_transform)
 	# 绘制不同benchmark之间的分隔竖线
 	seperator_top = - 0.02
 	seperator_bottom = bench_label_y - 0.02
-	x_sep_0 = group_centers[0] - 0.5*group_width
-	ax_energy.plot([x_sep_0, x_sep_0], [seperator_top, seperator_bottom], transform=xaxis_transform, color='gray', linewidth=0.5, clip_on=False)
-	for idx in range(len(group_centers)):
-		x_sep = group_centers[idx] + 0.5*group_width
-		ax_energy.plot([x_sep, x_sep], [seperator_top, seperator_bottom], transform=xaxis_transform, color='gray', linewidth=0.5, clip_on=False)
+	if bench_centers:
+		left_boundary = bench_centers[0] - bench_widths[0] / 2.0
+		ax_energy.plot([left_boundary-0.1, left_boundary-0.1], [seperator_top, seperator_bottom], transform=xaxis_transform, color='gray', linewidth=0.5, clip_on=False)
+		pos = left_boundary + 0.15
+		for idx, width in enumerate(bench_widths):
+			pos += width
+			ax_energy.plot([pos, pos], [seperator_top, seperator_bottom], transform=xaxis_transform, color='gray', linewidth=0.5, clip_on=False)
+			if idx < len(bench_widths) - 1:
+				pos += bench_gap
 
 	for axis in (ax_time, ax_energy):
 		axis.tick_params(axis='y', pad=YAXIS_PAD if YAXIS_PAD is not None else 10)
