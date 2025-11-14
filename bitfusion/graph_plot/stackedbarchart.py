@@ -190,17 +190,29 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 	n_bench = len(bench_names)
 	n_arch = len(architectures)
 	bar_width = BAR_WIDTH
-	group_width = bar_width * n_arch + 0.2
+	inner_gap = 0.1	# 每组内两根柱子之间的缝隙
+	group_width = (bar_width + inner_gap) * n_arch + 0.2
 	group_centers = np.arange(n_bench) * group_width
-	offsets = (np.arange(n_arch) - (n_arch - 1) / 2.0) * bar_width
+	offsets = (np.arange(n_arch) - (n_arch - 1) / 2.0) * (bar_width + inner_gap)
 
-	arch_colors = _color_gradient(n_arch)
-	component_palette = _color_gradient(
+	arch_colors = ['#4C72B0', '#FFFFFF', '#4AC0E0', '#FFBF00', '#D62728', '#B5D68A']
+	component_colors = {}
+	fallback_palette = _color_gradient(
 		len(ANT_COMPONENTS),
 		start=COLOR_MIN,
 		end=min(COLOR_MAX if COLOR_MAX is not None else 0.95, 0.85)
 	)
-	component_colors = {comp: component_palette[idx] for idx, comp in enumerate(ANT_COMPONENTS)}
+	for idx, comp in enumerate(ANT_COMPONENTS):
+		if idx < len(arch_colors):
+			component_colors[comp] = arch_colors[idx]
+		else:
+			component_colors[comp] = fallback_palette[idx]
+	component_styles = {
+		'Static': {'color': arch_colors[0], 'edgecolor': 'black', 'hatch': '', 'lw': 0.25},
+		'Dram': {'color': arch_colors[1], 'edgecolor': 'black', 'hatch': '///', 'lw': 0.25},
+		'Buffer': {'color': arch_colors[2], 'edgecolor': 'black', 'hatch': '..', 'lw': 0.6},
+		'Core': {'color': arch_colors[3], 'edgecolor': 'black', 'hatch': '', 'lw': 0.25},
+	}
 
 	fig_height = FIG_HEIGHT if FIG_HEIGHT is not None else 3.5
 	fig_width = FIG_WIDTH if FIG_WIDTH is not None else 8.0
@@ -213,6 +225,13 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 	if GLOBAL_FONTSIZE is not None:
 		rcParams['font.size'] = GLOBAL_FONTSIZE
 
+	geo_index = None
+	for idx, name in enumerate(bench_names):
+		if name.strip().lower() in ('geomean', 'gmean', 'geomean.', 'avg', 'average'):
+			geo_index = idx
+			break
+
+	# 开始绘制第一张子图: Time
 	max_time = 0.0
 	for idx, arch in enumerate(architectures):
 		values = np.array([
@@ -224,30 +243,35 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 		if not np.any(mask):
 			continue
 		max_time = max(max_time, np.nanmax(values))
+		hatch_styles = ['', '///', '..', '', '', '']
+		edge_colors = ['black', 'black', 'black', 'black', 'black', 'black']
+		edge_color = edge_colors[idx] if idx < len(edge_colors) else 'black'
 		ax_time.bar(
 			group_centers[mask] + offsets[idx],
 			values[mask],
 			width=bar_width,
 			color=arch_colors[idx],
+			edgecolor=edge_color,
 			label=arch,
-			edgecolor='black',
-			linewidth=0.25
+			linewidth=0.25,
+			hatch=hatch_styles[idx],
 		)
-
-	if n_arch:
-		ax_time.legend(
-			ncol=min(n_arch, LEGEND_NCOL or 4),
-			fontsize=LEGEND_FONTSIZE,
-			loc='upper right',
-			frameon=False
-		)
+		# 对于geomean这个组，展示数据
+		if geo_index is not None and geo_index < len(values):
+			val = values[geo_index]
+			if not np.isnan(val) and val != 1.0:
+				offset = max_time * 0.02 if max_time > 0 else 0.02
+				x_pos = group_centers[geo_index] + offsets[idx]
+				ax_time.text(x_pos, val + offset, f'{val:.2f}',
+				             ha='center', va='bottom', fontsize=DATA_LABEL_FONTSIZE)
 
 	ax_time.set_ylabel('Norm. Cycle', fontsize=AXIS_TITLE_FONTSIZE)
 	if max_time > 0:
-		ax_time.set_ylim(0, max_time * 1.2)
+		ax_time.set_ylim(0, max_time)
 	ax_time.grid(axis='y', color='0.85')
 	ax_time.set_axisbelow(True)
 
+	# 开始绘制第二张子图：Energy Breakdown
 	for idx, arch in enumerate(architectures):
 		bottom = np.zeros(n_bench)
 		for component in ANT_COMPONENTS:
@@ -261,7 +285,11 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 			mask = np.array([val is not None for val in values_list])
 			if not np.any(mask):
 				continue
-			color = component_colors.get(component, str(COLOR_MIN))
+			style = component_styles.get(component, {})
+			color = style.get('color', component_colors.get(component, str(COLOR_MIN)))
+			edgecolor = style.get('edgecolor', 'black')
+			hatch = style.get('hatch', '')
+			linewidth = style.get('lw', 0.25)
 			ax_energy.bar(
 				group_centers[mask] + offsets[idx],
 				values[mask],
@@ -269,10 +297,19 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 				bottom=bottom[mask],
 				color=color,
 				label=component if idx == 0 else None,
-				edgecolor='black',
-				linewidth=0.25
+				edgecolor=edgecolor,
+				linewidth=linewidth,
+				hatch=hatch
 			)
 			bottom[mask] += values[mask]
+		# 对于geomean这个组，展示数据
+		if geo_index is not None and geo_index < len(bottom):
+			total = bottom[geo_index]
+			if not np.isnan(total) and total != 1.0 and total > 0:
+				offset = total * 0.02
+				x_pos = group_centers[geo_index] + offsets[idx]
+				ax_energy.text(x_pos, total + offset, f'{total:.2f}',
+				               ha='center', va='bottom', fontsize=DATA_LABEL_FONTSIZE)
 
 	comp_handles, comp_labels = ax_energy.get_legend_handles_labels()
 	if comp_handles:
@@ -281,9 +318,16 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 			comp_labels,
 			ncol=len(comp_labels),
 			fontsize=LEGEND_FONTSIZE,
-			loc='upper right',
+			loc='lower center',
+			bbox_to_anchor=(0.5, 0.95),
 			frameon=False
 		)
+
+	# 调整画布的左右边界，让柱状图紧贴画布的左右边缘。
+	x_min = group_centers[0] + offsets[0] - bar_width / 2.0 - 0.2
+	x_max = group_centers[-1] + offsets[-1] + bar_width / 2.0 +0.2
+	for axis in (ax_time, ax_energy):
+		axis.set_xlim(x_min, x_max)
 
 	ax_energy.set_ylabel('Norm. Energy', fontsize=AXIS_TITLE_FONTSIZE)
 	ax_energy.grid(axis='y', color='0.85')
@@ -291,8 +335,9 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 	ax_energy.set_xticks(group_centers)
 	ax_energy.set_xticklabels([''] * len(bench_names))
 	xaxis_transform = ax_energy.get_xaxis_transform()
+	# 绘制不同benchmark的标签
 	arch_label_y = -0.03
-	bench_label_y = -0.30
+	bench_label_y = -0.38
 	for bench_idx, bench_name in enumerate(bench_names):
 		center = group_centers[bench_idx]
 		ax_energy.text(center, bench_label_y, bench_name, ha='center', va='top',
@@ -305,16 +350,14 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 			ax_energy.text(xpos, arch_label_y, arch, ha='center', va='top',
 				fontsize=XAXIS_FONTSIZE, rotation=90,
 				transform=xaxis_transform)
-	# ax_energy.set_xlabel('Benchmarks', fontsize=AXIS_TITLE_FONTSIZE)
-
-	geo_index = None
-	for idx, name in enumerate(bench_names):
-		if name.strip().lower() in ('geomean', 'gmean', 'geomean.', 'avg', 'average'):
-			geo_index = idx
-			break
-	if geo_index is not None:
-		for axis in (ax_time, ax_energy):
-			axis.axvline(geo_index - 0.5, color='black', linewidth=1)
+	# 绘制不同benchmark之间的分隔竖线
+	seperator_top = - 0.02
+	seperator_bottom = bench_label_y - 0.02
+	x_sep_0 = group_centers[0] - 0.5*group_width
+	ax_energy.plot([x_sep_0, x_sep_0], [seperator_top, seperator_bottom], transform=xaxis_transform, color='gray', linewidth=0.5, clip_on=False)
+	for idx in range(len(group_centers)):
+		x_sep = group_centers[idx] + 0.5*group_width
+		ax_energy.plot([x_sep, x_sep], [seperator_top, seperator_bottom], transform=xaxis_transform, color='gray', linewidth=0.5, clip_on=False)
 
 	for axis in (ax_time, ax_energy):
 		axis.tick_params(axis='y', pad=YAXIS_PAD if YAXIS_PAD is not None else 10)
@@ -330,60 +373,44 @@ def plot_ant_results(outputFileName, bench_names, architectures, cycle_data, ene
 
 def main():
 
-	global YAXIS_MIN, YAXIS_MAX, FIG_WIDTH, FIG_HEIGHT, BAR_WIDTH, COLOR_MIN, COLOR_MAX, GLOBAL_FONTSIZE, LEGEND_FONTSIZE, \
-			AXIS_TITLE_FONTSIZE, TOP_LABEL_FONTSIZE, XAXIS_FONTSIZE, YAXIS_PAD, XAXIS_PAD, ISRATES, BAR_LEFT_MARGIN, SPACE_BW_NEURALORACLE, TOP_LABEL_SPACE, \
-			ISXAXIS, ISYAXIS, LOG, LEGEND_LOCATION, ROTATEXAXIS, NOLEGEND, XAXISPADDING, DATALABEL, DATA_LABEL_FONTSIZE, TOPLABEL_FORMAT, DATALABEL_FORMAT, \
-			TOPLABEL_ROTATE, DATALABEL_ROTATE, TOPLABEL_BOLD, DATALABEL_BOLD, LEGEND_XSPACE, LEGEND_YSPACE, LEGEND_NCOL, XAXIS_TEXTOFFSET, ISFIXED, BAR_LABEL1, BAR_LABEL2, XAXIS_YTEXT_OFFSET, \
+	global  YAXIS_MIN, YAXIS_MAX, FIG_WIDTH, FIG_HEIGHT, BAR_WIDTH, COLOR_MIN, COLOR_MAX, GLOBAL_FONTSIZE, LEGEND_FONTSIZE, \
+			AXIS_TITLE_FONTSIZE, TOP_LABEL_FONTSIZE, XAXIS_FONTSIZE, YAXIS_PAD, \
+			LEGEND_LOCATION, ROTATEXAXIS , XAXISPADDING, DATALABEL, DATA_LABEL_FONTSIZE, TOPLABEL_FORMAT, DATALABEL_FORMAT, \
+			TOPLABEL_ROTATE, DATALABEL_ROTATE, TOPLABEL_BOLD, DATALABEL_BOLD, XAXIS_TEXTOFFSET, \
 			BENCH_NEWLINE
 
 	arg_parser = argparse.ArgumentParser(
 		prog='stackedbarchart.py',
 		description='Draw stacked bar charts from BitFusion CSV exports',
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-	arg_parser.add_argument('--csv_file', help='Path to the source CSV file')
-	arg_parser.add_argument('--output_file', help='Destination PDF file')
-	arg_parser.add_argument('--ymin', dest='ymin', type=float, default=0.0, help='Minimum value of Y-axis')
-	arg_parser.add_argument('--ymax', dest='ymax', type=float, default=6.0, help='Maximum value of Y-axis')
-	arg_parser.add_argument('--width', dest='fig_width', type=float, default=25.5, help='Figure width')
-	arg_parser.add_argument('--height', dest='fig_height', type=float, default=6, help='Figure height')
-	arg_parser.add_argument('--barwidth', dest='bar_width', type=float, default=0.2, help='Width of each bar')
-	arg_parser.add_argument('--colormin', dest='color_min', type=float, default=0.15, help='Lightest bar color')
-	arg_parser.add_argument('--colormax', dest='color_max', type=float, default=0.95, help='Darkest bar color')
-	arg_parser.add_argument('--toplabelfontsize', dest='top_label_fontsize', type=float, default=10.0, help='Font size for top labels')
-	arg_parser.add_argument('--legendfontsize', dest='legend_fontsize', type=float, default=12.0, help='Font size for legend text')
-	arg_parser.add_argument('--axistitlefontsize', dest='axis_title_fontsize', type=float, default=15.0, help='Font size for axis titles')
-	arg_parser.add_argument('--globalfontsize', dest='global_fontsize', type=float, default=12.0, help='Global base font size')
-	arg_parser.add_argument('--xaxisfontsize', dest='xaxis_fontsize', type=float, default=12.0, help='Font size for X-axis labels')
-	arg_parser.add_argument('--xaxis_ytextoffset', dest='xaxis_ytext_offset', type=float, default=-0.1, help='YOffset for X-axis text')
-	arg_parser.add_argument('--yaxispad', dest='yaxis_pad', type=float, default=10.0, help='Padding for Y-axis ticks')
-	arg_parser.add_argument('--xaxispad', dest='xaxis_pad', type=float, default=10.0, help='Padding for X-axis ticks')
-	arg_parser.add_argument('--legend_xspace', dest='legend_xspace', type=float, default=0.5, help='Legend X anchor spacing')
-	arg_parser.add_argument('--legend_yspace', dest='legend_yspace', type=float, default=1.25, help='Legend Y anchor spacing')
-	arg_parser.add_argument('--legend_ncol', dest='legend_ncol', type=int, default=4, help='Number of legend columns')
-	arg_parser.add_argument('--datalabelfontsize', dest='data_label_fontsize', type=float, default=10.0, help='Font size for data labels')
-	arg_parser.add_argument('--isrates', dest='is_rates', type=_str_to_bool, default=False, metavar='{True,False}', help='Apply percentage formatter to Y-axis')
-	arg_parser.add_argument('--isfixed', dest='is_fixed', type=_str_to_bool, default=False, metavar='{True,False}', help='Use fixed formatter for Y-axis')
-	arg_parser.add_argument('--bar_label1', dest='bar_label1', default='', help='Text label for first bar group')
-	arg_parser.add_argument('--bar_label2', dest='bar_label2', default='', help='Text label for second bar group')
-	arg_parser.add_argument('--barleftmargin', dest='bar_left_margin', type=float, default=0.5, help='Left margin multiplier for bars')
-	arg_parser.add_argument('--spacebwneuraloracle', dest='space_bw_neuraloracle', type=_str_to_bool, default=False, metavar='{True,False}', help='Enable spacing between neural and oracle bars')
-	arg_parser.add_argument('--toplabelspace', dest='top_label_space', type=float, default=0.03, help='Spacing for top labels')
-	arg_parser.add_argument('--isxaxis', dest='is_xaxis', type=_str_to_bool, default=True, metavar='{True,False}', help='Toggle X-axis label')
-	arg_parser.add_argument('--isyaxis', dest='is_yaxis', type=_str_to_bool, default=True, metavar='{True,False}', help='Toggle Y-axis label')
-	arg_parser.add_argument('--log', dest='log_scale', type=_str_to_bool, default=False, metavar='{True,False}', help='Enable logarithmic scale')
-	arg_parser.add_argument('--rotatexaxis', dest='rotate_xaxis', type=_rotation_value, default=0.0, help="Rotation angle for X-axis text or 'False'")
-	arg_parser.add_argument('--nolegend', dest='no_legend', type=_str_to_bool, default=False, metavar='{True,False}', help='Hide legend')
-	arg_parser.add_argument('--legloc', dest='legend_location', type=int, default=8, help='Matplotlib legend location code')
-	arg_parser.add_argument('--xaxispadding', dest='xaxis_padding', type=float, default=0.4, help='Padding below X-axis labels')
-	arg_parser.add_argument('--datalabel', dest='data_label', type=_str_to_bool, default=False, metavar='{True,False}', help='Display numeric labels on bars')
-	arg_parser.add_argument('--datalabelformat', dest='data_label_format', default='%d', help='Format string for data labels')
-	arg_parser.add_argument('--toplabelformat', dest='top_label_format', default='%.1f', help='Format string for top labels')
-	arg_parser.add_argument('--toplabelrotate', dest='top_label_rotate', type=int, default=0, help='Rotation for top labels')
-	arg_parser.add_argument('--datalabelrotate', dest='data_label_rotate', type=int, default=0, help='Rotation for data labels')
-	arg_parser.add_argument('--xaxis_textoffset', dest='xaxis_text_offset', type=float, default=0.5, help='Relative offset for X-axis text')
-	arg_parser.add_argument('--toplabelbold', dest='top_label_bold', default='normal', help='Font weight for top labels')
-	arg_parser.add_argument('--datalabelbold', dest='data_label_bold', default='normal', help='Font weight for data labels')
-	arg_parser.add_argument('--benchnewline', dest='bench_newline', type=_str_to_bool, default=False, metavar='{True,False}', help='Insert newline inside benchmark names')
+	arg_parser.add_argument('--csv_file', 									default="results/ant_res.csv",	help='Path to the source CSV file'				)
+	arg_parser.add_argument('--output_file', 								default="results/ant_res.pdf",	help='Destination PDF file'						)
+	arg_parser.add_argument('--ymin', 				type=float, 			default=0.0, 					help='Minimum value of Y-axis'					)
+	arg_parser.add_argument('--ymax', 				type=float, 			default=6.0, 					help='Maximum value of Y-axis'					)
+	arg_parser.add_argument('--fig_width', 			type=float, 			default=25.5, 					help='Figure width'								)
+	arg_parser.add_argument('--fig_height', 		type=float, 			default=6, 						help='Figure height'							)
+	arg_parser.add_argument('--bar_width', 			type=float, 			default=0.18, 					help='Width of each bar'						)
+	arg_parser.add_argument('--color_min', 			type=float, 			default=0.15, 					help='Lightest bar color'						)
+	arg_parser.add_argument('--color_max', 			type=float, 			default=0.95, 					help='Darkest bar color'						)
+	arg_parser.add_argument('--top_label_fontsize', type=float, 			default=10.0, 					help='Font size for top labels'					)
+	arg_parser.add_argument('--legend_fontsize', 	type=float, 			default=12.0, 					help='Font size for legend text'				)
+	arg_parser.add_argument('--axis_title_fontsize',type=float, 			default=20.0, 					help='Font size for axis titles'				)
+	arg_parser.add_argument('--global_fontsize', 	type=float, 			default=12.0, 					help='Global base font size'					)
+	arg_parser.add_argument('--xaxis_fontsize', 	type=float, 			default=15.0, 					help='Font size for X-axis labels'				)
+	arg_parser.add_argument('--yaxis_pad', 			type=float, 			default=10.0, 					help='Padding for Y-axis ticks'					)
+	arg_parser.add_argument('--data_label_fontsize',type=float, 			default=10.0, 					help='Font size for data labels'				)
+	arg_parser.add_argument('--rotate_xaxis', 		type=_rotation_value, 	default=0.0, 					help="Rotation angle for X-axis text or 'False'")
+	arg_parser.add_argument('--legend_location', 	type=int, 				default=8, 						help='Matplotlib legend location code'			)
+	arg_parser.add_argument('--xaxis_padding', 		type=float, 			default=0.4, 					help='Padding below X-axis labels'				)
+	arg_parser.add_argument('--data_label', 		type=_str_to_bool, 		default=False,  				help='Display numeric labels on bars'			)
+	arg_parser.add_argument('--data_label_format', 							default='%d', 					help='Format string for data labels'			)
+	arg_parser.add_argument('--top_label_format', 							default='%.1f', 				help='Format string for top labels'				)
+	arg_parser.add_argument('--top_label_rotate', 	type=int, 				default=0, 						help='Rotation for top labels'					)
+	arg_parser.add_argument('--data_label_rotate', 	type=int, 				default=0, 						help='Rotation for data labels'					)
+	arg_parser.add_argument('--xaxis_text_offset', 	type=float, 			default=0.5, 					help='Relative offset for X-axis text'			)
+	arg_parser.add_argument('--top_label_bold', 							default='normal', 				help='Font weight for top labels'				)
+	arg_parser.add_argument('--data_label_bold', 							default='normal', 				help='Font weight for data labels'				)
+	arg_parser.add_argument('--bench_newline', 		type=_str_to_bool, 		default=False,  				help='Insert newline inside benchmark names'	)
 
 	args = arg_parser.parse_args()
 
@@ -410,25 +437,9 @@ def main():
 	AXIS_TITLE_FONTSIZE = args.axis_title_fontsize
 	GLOBAL_FONTSIZE = args.global_fontsize
 	XAXIS_FONTSIZE = args.xaxis_fontsize
-	XAXIS_YTEXT_OFFSET = args.xaxis_ytext_offset
 	YAXIS_PAD = args.yaxis_pad
-	XAXIS_PAD = args.xaxis_pad
-	LEGEND_XSPACE = args.legend_xspace
-	LEGEND_YSPACE = args.legend_yspace
-	LEGEND_NCOL = args.legend_ncol
 	DATA_LABEL_FONTSIZE = args.data_label_fontsize
-	ISRATES = args.is_rates
-	ISFIXED = args.is_fixed
-	BAR_LABEL1 = args.bar_label1
-	BAR_LABEL2 = args.bar_label2
-	BAR_LEFT_MARGIN = args.bar_left_margin
-	SPACE_BW_NEURALORACLE = args.space_bw_neuraloracle
-	TOP_LABEL_SPACE = args.top_label_space
-	ISXAXIS = args.is_xaxis
-	ISYAXIS = args.is_yaxis
-	LOG = args.log_scale
 	ROTATEXAXIS = args.rotate_xaxis
-	NOLEGEND = args.no_legend
 	LEGEND_LOCATION = args.legend_location
 	XAXISPADDING = args.xaxis_padding
 	DATALABEL = args.data_label
