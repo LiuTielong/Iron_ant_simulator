@@ -206,9 +206,17 @@ def get_stats_fast(conv_params, tiling, order_type, verbose=False):
     return stats
 
 def optimize_for_order(conv_params):
+    """
+    本函数用于穷举搜索卷积层的最优 loop ordering 和 tiling 策略，返回性能最优的执行方案。
+    通过以下策略找到最优配置：
+        1.生成所有可能的 loop ordering（5 个 loop 维度的全排列）；
+        2.对每个 ordering，穷举所有 tiling 组合；
+        3.计算每个方案的性能和能耗，选择最优方案。
+    
+    """
     # Generate permutations for the order
     loops = ['B/b', 'OW/ow', 'OH/oh', 'IC/ic', 'OC/oc']
-    order = set(permutations(loops))
+    order = set(permutations(loops))                    # # 生成 5! = 120 种 ordering
 
     return_dict = {}
     acc_obj, K, O, S, IC, OC, B, iprec, wprec, im2col, weight_stationary, energy_cost = conv_params
@@ -216,6 +224,7 @@ def optimize_for_order(conv_params):
     _bound_optimizer_method = functools.partial(_optimize_for_order, conv_params)
 
     try:
+        # 1. 对于每种循环顺序，都找到最优的tiling策略，以及对应的cycle数和energy
         pool = Pool(cpu_count())
         results = pool.map_async(_bound_optimizer_method, order).get(10000)
         pool.close()
@@ -238,6 +247,7 @@ def optimize_for_order(conv_params):
         # min_energy = min([x[-3] for x in results])
         # cycles_list = [x[-2] for x in results]
         # energy_list = [x[-1] for x in results]
+        # 2. 在这120种策略中寻找最优。
         for r in results:
             tiling, order_type, cycles, energy = r
             if best_cycles is None or best_cycles > cycles or (best_cycles == cycles and best_energy > energy):
@@ -374,7 +384,7 @@ def get_loop_instructions(conv_params, tiling, order_type):
 
 def _optimize_for_order(conv_params, order_type, verbose=False):
     """
-    For a given ordering, optimizes tiling
+    For a given ordering, optimizes tiling。对于一种循环顺序，优化 tiling 策略。
     Args:
         conv_params: A tuple with convolution params
         order_type: ordering loop

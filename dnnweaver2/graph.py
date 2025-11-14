@@ -16,7 +16,25 @@ import pandas as pd
 import os
 
 class Graph(object):
+    """
+    Graph类是DNNWeaver2框架中的核心组件之一，
+    用于表示和管理神经网络计算图。它负责跟踪张量(Tensor)和操作(Operation)之间的关系，
+    并提供了构建、管理和分析神经网络模型的功能。
+    """
     def __init__(self, name, dataset, log_level=logging.DEBUG):
+        """
+        创建一个Graph对象。
+        维护多个注册表和计数器：
+            tensor_registry: 有序字典，存储张量对象
+            tensor_id_counter: 用于生成张量的唯一ID
+            op_registry:存储所有操作
+            op_id_counter: 操作类型计数器
+            op_type_counter: 用于记录每个操作类型的数量
+            current_scope: 当前作用域
+            scope_stack: 用于保存作用域栈
+            grad_dtype: 梯度张量的数据类型
+            intermediate_dtype: 中间张量的数据类型
+        """
         default_graph = self
         self.name = name
         self.dataset = dataset
@@ -57,6 +75,9 @@ class Graph(object):
         return dot
 
     def tensor(self, shape, name=None, dtype=None, trainable=True, data=None):
+        """
+        创建新的张量并注册到tensor_registry.
+        """
         assert shape is not None, shape
         assert isinstance(shape, tuple) or isinstance(shape, int)
         if isinstance(shape, list):
@@ -72,6 +93,9 @@ class Graph(object):
         return t
 
     def register_tensor(self, t):
+        """
+        将已有张量注册到tensor_registry.
+        """
         assert t.name not in self.tensor_registry
         self.tensor_registry[t.name] = t
 
@@ -144,6 +168,9 @@ class Graph(object):
 
     @contextmanager
     def name_scope(self, name):
+        """
+        上下文管理器：管理命名作用域，帮助组织复杂的网络结构
+        """
         current_scope = self.current_scope
         current_op_type_counter = self.op_type_counter.copy()
         if self.current_scope == "":
@@ -217,12 +244,12 @@ class Graph(object):
 
     def load_params_from_pickle(self, pickle_filename):
         with open(pickle_filename, "rb") as h:
-            if "2.7" in sys.version:
-            	params = pickle.load(h)
-            elif "3.5" in sys.version:
+            if sys.version_info[0] == 2:
+                params = pickle.load(h)
+            elif sys.version_info[0] == 3:
                 params = pickle.load(h, encoding='latin1')
             else:
-                raise Exception("Unknown python version")
+                raise Exception("Unsupported python version: {}".format(sys.version))
 
         for opname in params.keys():
             if opname in self.op_registry.keys():

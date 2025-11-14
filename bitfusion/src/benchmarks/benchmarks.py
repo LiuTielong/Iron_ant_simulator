@@ -1,3 +1,11 @@
+"""
+1. 先封装了 fc、conv、create_conv、create_fc 等工具函数，并通过 get_precision 把整数位宽转成 DNNWeaver 的 FQDtype，
+这样就能根据一组 layer 描述直接生成 Graph 并应用 Ant/BitFusion 固定点精度。
+2. benchlist 目前只包含 VGG16/ResNet18/ResNet50/InceptionV3/ViT/MNLI/COLA/SST-2，但文件里其实为 13 个图像+GLUE 基准都准备了 layer 列表。
+3. get_bench_nn_ant 到 get_bench_nn_bis 六个函数只是根据基准名调用对应的 layer 表并执行 create_net，方便上层 sweep/实验脚本按量化方案切换。
+4. write_to_csv/get_bench_numbers 能把模拟结果写成 CSV，不过文件末尾的 CLI 模板无法直接运行。
+"""
+
 import argparse
 import logging
 
@@ -117,8 +125,8 @@ def create_conv(input_size, weight_size, stride_size=None, pad=None, c_dtype=Non
 
     input = get_tensor(shape=(batch_size, input_size[2], input_size[3], input_size[1]), name='data', dtype=w_dtype, trainable=False)
     weights = get_tensor(shape=(output_channels, kernel_size[0], kernel_size[1], input_channels), name='weights', dtype=w_dtype)
-    biases = get_tensor(shape=(output_channels), name='biases', dtype=c_dtype)
-    _conv = conv2D(input, weights, biases, stride=stride, pad=pad, dtype=c_dtype)
+    biases = get_tensor(shape=(output_channels), name='biases', dtype=c_dtype)      # bias仍然是16bit
+    _conv = conv2D(input, weights, biases, stride=stride, pad=pad, dtype=c_dtype)   # 卷积的结果也是16bit
     return _conv
 
 def create_fc(input_size, weight_size, c_dtype=None, w_dtype=None):
@@ -315,19 +323,33 @@ def get_bench_nn_bis(bench_name, batch_size):
         return create_net(bench_name, biscaled.mnli, batch_size)
 
 def write_to_csv(csv_name, fields, stats, graph, csv_path='./'):
-    if not os.path.exists(csv_path):
-        os.makedirs(csv_path)
+    """
+    将 get_bench_numbers 收集到的 Stats 写入 CSV。
+    stats: 以 op 名称为键的 Stats 对象字典。
+    graph: 对应的 DNNWeaver Graph，用于保持层顺序。
+    """
+    os.makedirs(csv_path, exist_ok=True)
 
-    for l in stats:
-        print(l)
-        print(stats[l]['total'])
+    def stats_to_columns(stat_obj):
+        return [
+            stat_obj.total_cycles,
+            stat_obj.mem_stall_cycles,
+            stat_obj.reads.get('act', 0),
+            stat_obj.reads.get('wgt', 0),
+            stat_obj.reads.get('out', 0),
+            stat_obj.reads.get('dram', 0),
+            stat_obj.writes.get('out', 0),
+            stat_obj.writes.get('dram', 0),
+        ]
 
     bench_csv_name = os.path.join(csv_path, csv_name)
     with open(bench_csv_name, 'w') as f:
-        f.write(', '.join(fields+['\n']))
-        for l in network:
-            if isinstance(network[l], ConvLayer):
-                f.write('{}, {}\n'.format(l, ', '.join(str(x) for x in stats[l]['total'])))
+        f.write(', '.join(fields) + '\n')
+        for opname, op in graph.op_registry.items():
+            if opname not in stats:
+                continue
+            row_values = [opname] + [str(x) for x in stats_to_columns(stats[opname])]
+            f.write(', '.join(row_values) + '\n')
 
 def get_bench_numbers(graph, sim_obj, batch_size=1, weight_stationary = False):
     stats = {}

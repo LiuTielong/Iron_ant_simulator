@@ -426,7 +426,7 @@ class Simulator(object):
         I = (O - 1) * S + K
 
         # We do not tile the "K" dimension and compute an entire 2-D conv at a
-        # time
+        # 搜索最优的tiling策略
         num_O_tiles = int(math.ceil(log2(O))) + 1
         num_IC_tiles = int(math.ceil(log2(IC))) + 1
         num_OC_tiles = int(math.ceil(log2(math.ceil(float(OC)/self.accelerator.M)))) + 1
@@ -450,7 +450,7 @@ class Simulator(object):
         # print(best_instructions)
         # print(best_tiling)
         # print(best_order)
-
+        # 对于我的例子，找到一个最优的tiling策略为：OW/ow=(14,8), OH/oh=(14,8), IC/ic=(1,3), OC/oc=(2,32)
 
         stats = get_stats_fast(conv_params, best_tiling, best_order, verbose=False)
 
